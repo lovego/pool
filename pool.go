@@ -16,14 +16,20 @@ type Value struct {
 type Pool struct {
 	mu sync.Mutex
 
-	idleTimeout  time.Duration
-	maxIdle      int // <  0 means unlimited
+	// how long after a resource keep idle, it will be closed.
+	idleTimeout time.Duration
+	// max number of idle resources to keep. < 0 means unlimited.
+	maxIdle int
+	// the idle resources map.
 	idle         map[uint64]*Value
 	idleStartKey uint64
 
+	// max number of resouces can be opened at a given moment.
 	maxOpen int // <= 0 means unlimited
+	// current number of opened resources, including the idle ones and the busy ones.
 	numOpen int
-	opener  func() (io.Closer, error)
+	// the resource opener
+	opener func() (io.Closer, error)
 
 	cond *sync.Cond
 }
