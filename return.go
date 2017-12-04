@@ -17,10 +17,9 @@ func (p *Pool) Return(resource io.Closer) error {
 	if p.maxIdle >= 0 && len(p.idle) >= p.maxIdle {
 		return p.release(resource)
 	}
-	p.idle[p.idleStartKey] = Value{
+	p.idle[p.idleStartKey+uint64(len(p.idle))] = Value{
 		resource: resource, idleFrom: time.Now(),
 	}
-	p.idleStartKey++
 	p.mu.Unlock()
 
 	// notify waiting Get there is a resource becomes idle now, go to get it.
@@ -54,5 +53,9 @@ func (p *Pool) release(resource io.Closer) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (p *Pool) Close() error {
 	return nil
 }

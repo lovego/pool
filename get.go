@@ -1,11 +1,13 @@
 package pool
 
 import (
+	"context"
 	"io"
+	"log"
 	"time"
 )
 
-func (p *Pool) Get() (io.Closer, error) {
+func (p *Pool) Get(ctx context.Context) (io.Closer, error) {
 	p.mu.Lock()
 	if p.idleTimeout > 0 {
 		if err := p.prune(); err != nil {
@@ -20,7 +22,11 @@ func (p *Pool) Get() (io.Closer, error) {
 			return p.open()
 		}
 		p.mu.Unlock()
-		<-p.notification
+		select {
+		case <-p.notification:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		p.mu.Lock()
 	}
 }
@@ -42,7 +48,6 @@ func (p *Pool) prune() error {
 		}
 		delete(p.idle, p.idleStartKey)
 		p.idleStartKey++
-		p.mu.Unlock()
 		if err := p.release(v.resource); err != nil {
 			return err
 		}
@@ -56,7 +61,10 @@ func (p *Pool) prune() error {
 
 // p.mu must be locked
 func (p *Pool) getIdle() io.Closer {
-	v := p.idle[p.idleStartKey]
+	v, ok := p.idle[p.idleStartKey]
+	if !ok {
+		log.Println("idle: %v startKey: %d", p.idle, p.idleStartKey)
+	}
 	delete(p.idle, p.idleStartKey)
 	if len(p.idle) > 0 {
 		p.idleStartKey++
@@ -71,7 +79,7 @@ func (p *Pool) getIdle() io.Closer {
 func (p *Pool) open() (io.Closer, error) {
 	p.numOpen++ // optimistically
 	p.mu.Unlock()
-	if resource, err := p.opener(); err == nil {
+	if resource, err := p.openFunc(); err == nil {
 		return resource, nil
 	} else {
 		p.mu.Lock()
