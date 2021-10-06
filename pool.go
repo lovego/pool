@@ -6,30 +6,46 @@ import (
 	"time"
 )
 
-type Value struct {
-	resource io.Closer
-	idleFrom time.Time
+type Resource struct {
+	io.Closer
+	idleAt   time.Time
+	openedAt time.Time
+}
+
+func (r *Resource) Resource() io.Closer {
+	return r.Closer
 }
 
 type Pool struct {
 	// The resource open func
-	openFunc func() (io.Closer, error)
-	// Max number of resources can be opened at a given moment. Default value 10 is used if maxOpen <= 0.
+	open func() (io.Closer, error)
+	// Max number of resources can be opened at a given moment.
+	// Default value 10 is used if maxOpen <= 0.
 	maxOpen int
-	// Max number of idle resources to keep. Value of 0 is used if maxIdle < 0.
+	// Max number of idle resources to keep.
+	// Value of 0 is used if maxIdle < 0.
 	maxIdle int
-	// Close a resource after how long it's opened. maxLine <= 0 means never close for this reason.
-	maxLife time.Duration
+	// Close a resource after how long it has been idle.
+	// maxIdleTime <= 0 means never close a resource due to it's idle time.
+	maxIdleTime time.Duration
+	// Close a resource after how long it has been opened.
+	// maxLifeTime <= 0 means never close a resource due to it's life time.
+	maxLifeTime time.Duration
 
-	// internal fields
-	mu sync.Mutex
 	// current number of opened resources, including the idle ones and the busy ones.
-	numOpen   int
-	resources chan interface{}
+	opened int
+	// idle resources
+	idle chan *Resource
+	// busy resources
+	busy map[*Resource]struct{}
+
+	sync.Mutex
 }
 
 func New(
-	openFunc func() (io.Closer, error), maxOpen, maxIdle int, maxLife time.Duration,
+	open func() (io.Closer, error),
+	maxOpen, maxIdle int,
+	maxIdleTime, maxLifeTime time.Duration,
 ) *Pool {
 	if maxOpen <= 0 {
 		maxOpen = 10
@@ -42,11 +58,13 @@ func New(
 	}
 
 	p := &Pool{
-		openFunc:  openFunc,
-		maxOpen:   maxOpen,
-		maxIdle:   maxIdle,
-		maxLife:   maxLife,
-		resources: make(chan interface{}, maxIdle),
+		open:        open,
+		maxOpen:     maxOpen,
+		maxIdle:     maxIdle,
+		maxIdleTime: maxIdleTime,
+		maxLifeTime: maxLifeTime,
+		idle:        make(chan *Resource, maxIdle),
+		busy:        make(map[*Resource]struct{}, maxOpen),
 	}
 	return p
 }
