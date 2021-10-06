@@ -2,68 +2,55 @@ package pool
 
 import (
 	"errors"
-	"fmt"
+	"time"
 )
-
-var errorResource1 = errors.New("pool: the resource is not got from this pool or already been put back.")
 
 // Put a resource back into the pool.
 // The resource must be got from the pool and be `Put` only one time, otherwise an error is returned.
 func (p *Pool) Put(r *Resource) error {
-	if !p.removeFromBusy(r) {
-		return errorResource1
+	if p.exceedMaxLifeTime(r) {
+		return p.Close(r)
+	}
+	if err := p.removeFromBusy(r); err != nil {
+		return err
 	}
 	select {
 	case p.idle <- r:
+		r.idleAt = time.Now()
+		return nil
 	default:
-		p.Unlock()
-		if err := r.Closer.Close(); err != nil {
-			return err
-		}
-		p.Lock()
-		if err := p.decrease(); err != nil {
-			return err
-		}
+		return p.close(r)
 	}
-	p.Unlock()
 	return nil
 }
-
-var errorResource2 = errors.New("pool: the resource is not got from this pool or already been closed.")
 
 // Close a resource got from the pool.
 // The resource must be got from the pool and be `Close`d only one time, otherwise an error is returned.
 func (p *Pool) Close(r *Resource) error {
-	if !p.removeFromBusy(r) {
-		return errorResource2
-	}
-	p.Unlock()
-	if err := r.Closer.Close(); err != nil {
+	if err := p.removeFromBusy(r); err != nil {
 		return err
 	}
-	p.Lock()
+	return p.close(r)
+}
+
+func (p *Pool) close(r *Resource) error {
 	if err := p.decrease(); err != nil {
 		return err
 	}
-	p.Unlock()
-	return nil
+	return r.Closer.Close()
 }
 
-func (p *Pool) decrease() error {
-	p.opened--
-	if p.opened < len(p.idle) {
-		// this could happen in duplicate Close.
-		return fmt.Errorf("pool: opened(%d) < idle(%d)", p.opened, p.idle)
+var errorResource = errors.New("pool: the resource is not got from this pool or already been put back or closed.")
+
+func (p *Pool) removeFromBusy(r *Resource) error {
+	if r == nil || r.Closer == nil {
+		return errorResource
 	}
-	return nil
-}
-
-func (p *Pool) removeFromBusy(r *Resource) bool {
 	p.Lock()
+	defer p.Unlock()
 	if _, ok := p.busy[r]; !ok {
-		p.Unlock()
-		return false
+		return errorResource
 	}
 	delete(p.busy, r)
-	return true
+	return nil
 }

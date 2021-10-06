@@ -19,31 +19,50 @@ func (p *Pool) Get(ctx context.Context) (*Resource, error) {
 var errorTimeout = errors.New("pool: get resource timeout.")
 
 func (p *Pool) get(ctx context.Context) (*Resource, error) {
-	select {
-	case r := <-p.idle:
+	if r := p.getIdle(); r != nil {
 		return r, nil
-	default:
 	}
 
-	if r, err := p.tryOpen(); err != nil {
+	if r, err := p.tryOpen(ctx); err != nil {
 		return nil, err
 	} else if r != nil {
 		return r, nil
 	}
 
+	return p.waitIdle(ctx)
+}
+
+func (p *Pool) getIdle() *Resource {
+loop:
 	select {
 	case r := <-p.idle:
+		if p.closeIfShould(r) {
+			goto loop
+		}
+		return r
+	default:
+		return nil
+	}
+}
+
+func (p *Pool) waitIdle(ctx context.Context) (*Resource, error) {
+loop:
+	select {
+	case r := <-p.idle:
+		if p.closeIfShould(r) {
+			goto loop
+		}
 		return r, nil
 	case <-ctx.Done():
 		return nil, errorTimeout
 	}
 }
 
-func (p *Pool) tryOpen() (*Resource, error) {
+func (p *Pool) tryOpen(ctx context.Context) (*Resource, error) {
 	if !p.tryIncrease() {
 		return nil, nil
 	}
-	resource, err := p.open()
+	resource, err := p.open(ctx)
 	if resource != nil && err == nil {
 		return &Resource{Closer: resource, openedAt: time.Now()}, nil
 	}
@@ -52,20 +71,8 @@ func (p *Pool) tryOpen() (*Resource, error) {
 			return nil, err
 		}
 	}
-	p.Lock()
-	defer p.Unlock()
 	if err := p.decrease(); err != nil {
 		return nil, err
 	}
 	return nil, err
-}
-
-func (p *Pool) tryIncrease() bool {
-	p.Lock()
-	defer p.Unlock()
-	if p.opened >= p.maxOpen {
-		return false
-	}
-	p.opened++
-	return true
 }

@@ -1,7 +1,10 @@
 package pool
 
 import (
+	"context"
+	"fmt"
 	"io"
+	"log"
 	"sync"
 	"time"
 )
@@ -16,9 +19,11 @@ func (r *Resource) Resource() io.Closer {
 	return r.Closer
 }
 
+type openFunc func(context.Context) (io.Closer, error)
+
 type Pool struct {
 	// The resource open func
-	open func() (io.Closer, error)
+	open openFunc
 	// Max number of resources can be opened at a given moment.
 	// Default value 10 is used if maxOpen <= 0.
 	maxOpen int
@@ -42,11 +47,7 @@ type Pool struct {
 	sync.Mutex
 }
 
-func New(
-	open func() (io.Closer, error),
-	maxOpen, maxIdle int,
-	maxIdleTime, maxLifeTime time.Duration,
-) *Pool {
+func New(open openFunc, maxOpen, maxIdle int, maxIdleTime, maxLifeTime time.Duration) *Pool {
 	if maxOpen <= 0 {
 		maxOpen = 10
 	}
@@ -67,4 +68,43 @@ func New(
 		busy:        make(map[*Resource]struct{}, maxOpen),
 	}
 	return p
+}
+
+func (p *Pool) tryIncrease() bool {
+	p.Lock()
+	defer p.Unlock()
+	if p.opened >= p.maxOpen {
+		return false
+	}
+	p.opened++
+	return true
+}
+
+func (p *Pool) decrease() error {
+	p.Lock()
+	defer p.Unlock()
+	p.opened--
+	if p.opened < len(p.idle) {
+		// this could happen in duplicate Close.
+		return fmt.Errorf("pool: opened(%d) < idle(%d)", p.opened, p.idle)
+	}
+	return nil
+}
+
+func (p *Pool) closeIfShould(r *Resource) bool {
+	if p.exceedMaxIdleTime(r) || p.exceedMaxLifeTime(r) {
+		if err := p.close(r); err != nil {
+			log.Println("pool: close resource:", err)
+		}
+		return true
+	}
+	return false
+}
+
+func (p *Pool) exceedMaxIdleTime(r *Resource) bool {
+	return p.maxIdleTime > 0 && time.Since(r.idleAt) > p.maxIdleTime
+}
+
+func (p *Pool) exceedMaxLifeTime(r *Resource) bool {
+	return p.maxLifeTime > 0 && time.Since(r.openedAt) > p.maxLifeTime
 }
