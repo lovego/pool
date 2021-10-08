@@ -2,161 +2,214 @@ package pool
 
 import (
 	"context"
-	"net/url"
+	"errors"
+	"fmt"
+	"io"
+	"math/rand"
+	"strings"
 	"sync"
-	"testing"
 	"time"
 )
 
-func TestPool(t *testing.T) {
-	query, err := url.ParseQuery(`maxOpen=10&maxIdle=5`)
-	if err != nil {
-		t.Error(err)
-	}
-	pool, err := New(open, query)
-	if err != nil {
-		t.Error(err)
-	}
+var testPool = New(openTestResource, 10, 5, time.Minute, time.Hour)
 
-	testMaxOpen(pool, t)
-	testMaxIdle(pool, t)
-	testGetFromIdle(pool, t)
-	testGetFromOpen(pool, t)
-	testGetFromIdleByReturn(pool, t)
-	// testGetFromOpenByReturnOrRelease(pool, t)
+type testResource struct {
 }
 
-func testMaxOpen(pool *Pool, t *testing.T) {
-	var count countStruct
-	var wg sync.WaitGroup
-	for i := 0; i < 15; i++ {
-		wg.Add(1)
-		go doGetWithCount(pool, &count, &wg, t)
-	}
-	wg.Wait()
-	if count.successful != 10 || count.failed != 5 {
-		t.Errorf("unexpected count: successful: %d, failed: %d.", count.successful, count.failed)
-	}
-	if pool.numOpen != 10 {
-		t.Errorf("unexpected pool.numOpen: %d", pool.numOpen)
-	}
+func (tr testResource) Close() error {
+	return nil
 }
 
-type countStruct struct {
-	sync.Mutex
-	successful int
-	failed     int
+func openTestResource(ctx context.Context) (io.Closer, error) {
+	return testResource{}, nil
 }
 
-func testMaxIdle(pool *Pool, t *testing.T) {
-	if len(pool.idle) != 0 {
-		t.Errorf("unexpected idle size: %d", len(pool.idle))
-	}
+func ExamplePool() {
+	r1, err := testPool.Get(context.Background())
+	checkResultAndPrintPoolStatus(r1, err, testPool)
 
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go doReturn(pool, &wg, t)
-	}
-	wg.Wait()
+	r2, err := testPool.Get(context.Background())
+	checkResultAndPrintPoolStatus(r2, err, testPool)
 
-	if len(pool.idle) != 5 {
-		t.Errorf("unexpected idle size: %d", len(pool.idle))
-	}
-	if pool.numOpen != 5 {
-		t.Errorf("unexpected numOpen: %d", pool.numOpen)
-	}
-}
-
-func testGetFromIdle(pool *Pool, t *testing.T) {
-	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go doGet(pool, 0, &wg, t)
-	}
-	wg.Wait()
-
-	if len(pool.idle) != 0 {
-		t.Errorf("unexpected idle size: %d", len(pool.idle))
-	}
-	if pool.numOpen != 5 {
-		t.Errorf("unexpected numOpen: %d", pool.numOpen)
-	}
-}
-
-func testGetFromOpen(pool *Pool, t *testing.T) {
-	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go doGet(pool, 0, &wg, t)
-	}
-	wg.Wait()
-
-	if len(pool.idle) != 0 {
-		t.Errorf("unexpected idle size: %d", len(pool.idle))
-	}
-	if pool.numOpen != 10 {
-		t.Errorf("unexpected numOpen: %d", pool.numOpen)
-	}
-}
-
-func testGetFromIdleByReturn(pool *Pool, t *testing.T) {
-	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go doGet(pool, time.Second, &wg, t)
-	}
-	time.Sleep(time.Millisecond)
-	for i := 0; i < 7; i++ {
-		wg.Add(1)
-		go doReturn(pool, &wg, t)
-	}
-	wg.Wait()
-
-	if len(pool.idle) != 2 {
-		t.Errorf("unexpected idle size: %d", len(pool.idle))
-	}
-	if pool.numOpen != 10 {
-		t.Errorf("unexpected numOpen: %d", pool.numOpen)
-	}
-}
-
-func doGetWithCount(pool *Pool, count *countStruct, wg *sync.WaitGroup, t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Microsecond)
-	defer cancel()
-	got, err := pool.Get(ctx)
-
-	expect := resource{}
-	if got == expect && err == nil {
-		count.Lock()
-		count.successful++
-		count.Unlock()
-	} else if got == nil && err == context.DeadlineExceeded {
-		count.Lock()
-		count.failed++
-		count.Unlock()
+	if err := testPool.Put(r1); err != nil {
+		fmt.Println(err)
 	} else {
-		t.Error(got, err)
+		printPoolStatus(testPool)
 	}
-	wg.Done()
+
+	if err := testPool.Put(r2); err != nil {
+		fmt.Println(err)
+	} else {
+		printPoolStatus(testPool)
+	}
+
+	r3, err := testPool.Get(context.Background())
+	checkResultAndPrintPoolStatus(r3, err, testPool)
+
+	r4, err := testPool.Get(context.Background())
+	checkResultAndPrintPoolStatus(r4, err, testPool)
+
+	if err := testPool.Close(r3); err != nil {
+		fmt.Println(err)
+	} else {
+		printPoolStatus(testPool)
+	}
+
+	if err := testPool.Close(r4); err != nil {
+		fmt.Println(err)
+	} else {
+		printPoolStatus(testPool)
+	}
+
+	// Output:
+	// 1 1 0
+	// 2 2 0
+	// 2 1 1
+	// 2 0 2
+	// 2 1 1
+	// 2 2 0
+	// 1 1 0
+	// 0 0 0
 }
 
-func doGet(pool *Pool, timeout time.Duration, wg *sync.WaitGroup, t *testing.T) {
-	ctx := context.Background()
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
+func ExamplePool_concurrently() {
+	var resources = make(chan *Resource, testPool.maxOpen)
+
+	var wg sync.WaitGroup
+	for i := 0; i < testPool.maxOpen; i++ {
+		wg.Add(1)
+		go func() {
+			r, err := testPool.Get(context.Background())
+			checkResult(r, err)
+			resources <- r
+			wg.Done()
+		}()
 	}
-	if got, err := pool.Get(ctx); got == nil || err != nil {
-		t.Error(got, err)
+	wg.Wait()
+	printPoolStatus(testPool)
+
+	ctx, _ := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	fmt.Println(testPool.Get(ctx))
+	printPoolStatus(testPool)
+
+	go func() {
+		ctx, _ := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		r, err := testPool.Get(ctx)
+		checkResult(r, err)
+	}()
+	time.Sleep(time.Millisecond) // wait for the previous goroutine to be ready.
+
+	for i := 0; i < testPool.maxOpen; i++ {
+		wg.Add(1)
+		go func(i int) {
+			var fn func(*Resource) error
+			if i < 6 || rand.Int()%2 == 0 {
+				fn = testPool.Put
+			} else {
+				fn = testPool.Close
+			}
+			if err := fn(<-resources); err != nil {
+				fmt.Println(err)
+			}
+			wg.Done()
+		}(i)
 	}
-	wg.Done()
+	wg.Wait()
+
+	printPoolStatus(testPool)
+
+	// Output:
+	// 10 10 0
+	// <nil> pool: get resource timeout.
+	// 10 10 0
+	// 6 1 5
 }
 
-func doReturn(pool *Pool, wg *sync.WaitGroup, t *testing.T) {
-	if err := pool.Return(resource{}); err != nil {
-		t.Error(err)
+func checkResultAndPrintPoolStatus(r *Resource, err error, p *Pool) {
+	checkResult(r, err)
+	printPoolStatus(p)
+}
+
+func checkResult(r *Resource, err error) {
+	if r == nil || r.Resource() == nil || !r.openedAt.Before(time.Now()) || err != nil {
+		fmt.Println(r, err)
 	}
-	wg.Done()
+}
+
+func printPoolStatus(p *Pool) {
+	fmt.Println(p.opened, len(p.busy), len(p.idle))
+}
+
+func ExampleNew() {
+	p := New(openTestResource, 0, -1, time.Minute, time.Hour)
+	fmt.Println(p.maxOpen, p.maxIdle)
+
+	p = New(openTestResource, 10, 11, time.Minute, time.Hour)
+	fmt.Println(p.maxOpen, p.maxIdle)
+
+	// Output:
+	// 10 0
+	// 10 10
+}
+
+func ExamplePool_Get_error() {
+	p := New(func(ctx context.Context) (io.Closer, error) {
+		return testResource{}, errors.New("error")
+	}, 10, 5, time.Minute, time.Hour)
+	fmt.Println(p.Get(context.Background()))
+	printPoolStatus(p)
+
+	// Output:
+	// <nil> error
+	// 0 0 0
+}
+
+func ExamplePool_Get_closeIfShould() {
+	p := New(openTestResource, 1, 1, 10*time.Millisecond, 30*time.Millisecond)
+	r1, err := p.Get(context.Background())
+	checkResult(r1, err)
+	if err := p.Put(r1); err != nil {
+		fmt.Println(err)
+	}
+
+	time.Sleep(11 * time.Millisecond)
+	printPoolStatus(p)
+
+	r2, err := p.Get(context.Background())
+	checkResult(r2, err)
+	printPoolStatus(p)
+
+	time.Sleep(31 * time.Millisecond)
+	if err := p.Put(r2); err != nil {
+		fmt.Println(err)
+	}
+	printPoolStatus(p)
+
+	// Output:
+	// 1 0 1
+	// 1 1 0
+	// 0 0 0
+}
+
+func ExamplePool_errorResource() {
+	fmt.Println(testPool.Put(nil))
+	fmt.Println(testPool.Put(&Resource{Closer: testResource{}}))
+
+	fmt.Println(testPool.Close(nil))
+	fmt.Println(testPool.Close(&Resource{}))
+
+	// Output:
+	// pool: the resource is not got from this pool or already been put back or closed.
+	// pool: the resource is not got from this pool or already been put back or closed.
+	// pool: the resource is not got from this pool or already been put back or closed.
+	// pool: the resource is not got from this pool or already been put back or closed.
+}
+
+func ExamplePool_decrease() {
+	defer func() {
+		fmt.Println(strings.HasSuffix(recover().(string), " pool: opened(-1) < idle(0)"))
+	}()
+	p := New(openTestResource, 1, 1, time.Minute, time.Hour)
+	p.decrease()
+	// Output: true
 }

@@ -21,7 +21,6 @@ func (p *Pool) Put(r *Resource) error {
 	default:
 		return p.close(r)
 	}
-	return nil
 }
 
 // Close a resource got from the pool.
@@ -34,9 +33,7 @@ func (p *Pool) Close(r *Resource) error {
 }
 
 func (p *Pool) close(r *Resource) error {
-	if err := p.decrease(); err != nil {
-		return err
-	}
+	p.decrease()
 	return r.Closer.Close()
 }
 

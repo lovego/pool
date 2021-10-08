@@ -80,15 +80,16 @@ func (p *Pool) tryIncrease() bool {
 	return true
 }
 
-func (p *Pool) decrease() error {
+func (p *Pool) decrease() {
 	p.Lock()
 	defer p.Unlock()
 	p.opened--
+	// this should not happen.
 	if p.opened < len(p.idle) {
-		// this could happen in duplicate Close.
-		return fmt.Errorf("pool: opened(%d) < idle(%d)", p.opened, p.idle)
+		panic(fmt.Sprintf("%s pool: opened(%d) < idle(%d)",
+			time.Now().Format(time.RFC3339), p.opened, len(p.idle),
+		))
 	}
-	return nil
 }
 
 func (p *Pool) closeIfShould(r *Resource) bool {
@@ -102,9 +103,9 @@ func (p *Pool) closeIfShould(r *Resource) bool {
 }
 
 func (p *Pool) exceedMaxIdleTime(r *Resource) bool {
-	return p.maxIdleTime > 0 && time.Since(r.idleAt) > p.maxIdleTime
+	return r != nil && p.maxIdleTime > 0 && time.Since(r.idleAt) > p.maxIdleTime
 }
 
 func (p *Pool) exceedMaxLifeTime(r *Resource) bool {
-	return p.maxLifeTime > 0 && time.Since(r.openedAt) > p.maxLifeTime
+	return r != nil && p.maxLifeTime > 0 && time.Since(r.openedAt) > p.maxLifeTime
 }

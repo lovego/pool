@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"errors"
+	"log"
 	"time"
 )
 
@@ -68,11 +69,9 @@ func (p *Pool) tryOpen(ctx context.Context) (*Resource, error) {
 	}
 	if resource != nil {
 		if err := resource.Close(); err != nil {
-			return nil, err
+			log.Println("pool: close resource:", err)
 		}
 	}
-	if err := p.decrease(); err != nil {
-		return nil, err
-	}
+	p.decrease()
 	return nil, err
 }
