@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -108,4 +110,43 @@ func (p *Pool) exceedMaxIdleTime(r *Resource) bool {
 
 func (p *Pool) exceedMaxLifeTime(r *Resource) bool {
 	return r != nil && p.maxLifeTime > 0 && time.Since(r.openedAt) > p.maxLifeTime
+}
+
+func New2(open openFunc, values url.Values) (*Pool, error) {
+	var maxOpen, maxIdle int
+	var maxIdleTime, maxLifeTime time.Duration
+
+	if s := values.Get(`maxOpen`); s != `` {
+		if i, err := strconv.Atoi(s); err != nil {
+			return nil, err
+		} else {
+			maxOpen = i
+		}
+	}
+
+	if s := values.Get(`maxIdle`); s != `` {
+		if i, err := strconv.Atoi(s); err != nil {
+			return nil, err
+		} else {
+			maxIdle = i
+		}
+	}
+
+	if s := values.Get(`maxIdleTime`); s != `` {
+		if d, err := time.ParseDuration(s); err != nil {
+			return nil, err
+		} else {
+			maxIdleTime = d
+		}
+	}
+
+	if s := values.Get(`maxLifeTime`); s != `` {
+		if d, err := time.ParseDuration(s); err != nil {
+			return nil, err
+		} else {
+			maxLifeTime = d
+		}
+	}
+
+	return New(open, maxOpen, maxIdle, maxIdleTime, maxLifeTime), nil
 }
