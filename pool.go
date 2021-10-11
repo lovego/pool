@@ -27,15 +27,14 @@ type Pool struct {
 	// The resource open func
 	open openFunc
 	// Max number of resources can be opened at a given moment.
-	// Default value 10 is used if maxOpen <= 0.
 	maxOpen int
 	// Max number of idle resources to keep.
-	// Value of 0 is used if maxIdle < 0.
+	// maxIdle <= 0 means never keep any idle resources.
 	maxIdle int
-	// Close a resource after how long it has been idle.
+	// When `Get`, close a resource if it has been idle for `maxIdleTime`.
 	// maxIdleTime <= 0 means never close a resource due to it's idle time.
 	maxIdleTime time.Duration
-	// Close a resource after how long it has been opened.
+	// When `Get`/`Put`, close a resource if it has been opened for `maxLifeTime`.
 	// maxLifeTime <= 0 means never close a resource due to it's life time.
 	maxLifeTime time.Duration
 
@@ -49,9 +48,9 @@ type Pool struct {
 	sync.Mutex
 }
 
-func New(open openFunc, maxOpen, maxIdle int, maxIdleTime, maxLifeTime time.Duration) *Pool {
+func New(open openFunc, maxOpen, maxIdle int, maxIdleTime, maxLifeTime time.Duration) (*Pool, error) {
 	if maxOpen <= 0 {
-		maxOpen = 10
+		return nil, fmt.Errorf("pool: invalid maxOpen: %d", maxOpen)
 	}
 	if maxIdle < 0 {
 		maxIdle = 0
@@ -60,7 +59,7 @@ func New(open openFunc, maxOpen, maxIdle int, maxIdleTime, maxLifeTime time.Dura
 		maxIdle = maxOpen
 	}
 
-	p := &Pool{
+	return &Pool{
 		open:        open,
 		maxOpen:     maxOpen,
 		maxIdle:     maxIdle,
@@ -68,8 +67,7 @@ func New(open openFunc, maxOpen, maxIdle int, maxIdleTime, maxLifeTime time.Dura
 		maxLifeTime: maxLifeTime,
 		idle:        make(chan *Resource, maxIdle),
 		busy:        make(map[*Resource]struct{}, maxOpen),
-	}
-	return p
+	}, nil
 }
 
 func (p *Pool) tryIncrease() bool {
@@ -112,9 +110,12 @@ func (p *Pool) exceedMaxLifeTime(r *Resource) bool {
 	return r != nil && p.maxLifeTime > 0 && time.Since(r.openedAt) > p.maxLifeTime
 }
 
+// New2 return a pool by get params from url.Values.
+// Params default value:
+// maxOpen => 10;  maxIdle => 1; maxIdleTime => 10 Minute; maxLifeTime => 1 Hour.
 func New2(open openFunc, values url.Values) (*Pool, error) {
-	var maxOpen, maxIdle int
-	var maxIdleTime, maxLifeTime time.Duration
+	var maxOpen, maxIdle int = 10, 1
+	var maxIdleTime, maxLifeTime time.Duration = 10 * time.Minute, time.Hour
 
 	if s := values.Get(`maxOpen`); s != `` {
 		if i, err := strconv.Atoi(s); err != nil {
@@ -148,5 +149,5 @@ func New2(open openFunc, values url.Values) (*Pool, error) {
 		}
 	}
 
-	return New(open, maxOpen, maxIdle, maxIdleTime, maxLifeTime), nil
+	return New(open, maxOpen, maxIdle, maxIdleTime, maxLifeTime)
 }

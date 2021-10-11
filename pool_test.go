@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var testPool = New(openTestResource, 10, 5, time.Minute, time.Hour)
+var testPool, _ = New(openTestResource, 10, 5, time.Minute, time.Hour)
 
 type testResource struct {
 }
@@ -141,19 +141,19 @@ func printPoolStatus(p *Pool) {
 }
 
 func ExampleNew() {
-	p := New(openTestResource, 0, -1, time.Minute, time.Hour)
-	fmt.Println(p.maxOpen, p.maxIdle)
+	p, err := New(openTestResource, 0, -1, time.Minute, time.Hour)
+	fmt.Println(p, err)
 
-	p = New(openTestResource, 10, 11, time.Minute, time.Hour)
+	p, _ = New(openTestResource, 10, 11, time.Minute, time.Hour)
 	fmt.Println(p.maxOpen, p.maxIdle)
 
 	// Output:
-	// 10 0
+	// <nil> pool: invalid maxOpen: 0
 	// 10 10
 }
 
 func ExamplePool_Get_error() {
-	p := New(func(ctx context.Context) (io.Closer, error) {
+	p, _ := New(func(ctx context.Context) (io.Closer, error) {
 		return testResource{}, errors.New("error")
 	}, 10, 5, time.Minute, time.Hour)
 	fmt.Println(p.Get(context.Background()))
@@ -165,7 +165,7 @@ func ExamplePool_Get_error() {
 }
 
 func ExamplePool_Get_closeIfShould() {
-	p := New(openTestResource, 1, 1, 10*time.Millisecond, 30*time.Millisecond)
+	p, _ := New(openTestResource, 1, 1, 10*time.Millisecond, 30*time.Millisecond)
 	r1, err := p.Get(context.Background())
 	checkResult(r1, err)
 	if err := p.Put(r1); err != nil {
@@ -209,7 +209,7 @@ func ExamplePool_decrease() {
 	defer func() {
 		fmt.Println(strings.HasSuffix(recover().(string), " pool: opened(-1) < idle(0)"))
 	}()
-	p := New(openTestResource, 1, 1, time.Minute, time.Hour)
+	p, _ := New(openTestResource, 1, 1, time.Minute, time.Hour)
 	p.decrease()
 	// Output: true
 }
