@@ -6,11 +6,46 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
+
+func ExamplePool() {
+	var pool, err = New(func(ctx context.Context) (io.Closer, error) {
+		return net.Dial("tcp", "baidu.com:80")
+	}, func(ctx context.Context, r *Resource) bool {
+		if time.Since(r.IdleAt) < time.Minute {
+			return true
+		}
+		// check if r.Resource() is usable, may be by a ping or noop operation
+		return true
+	}, 5, 2)
+	if err != nil {
+		panic(err)
+	}
+
+	for i := 0; i < 10; i++ {
+		ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+		// get a connection
+		resource, err := pool.Get(ctx)
+		if err != nil {
+			panic(err)
+		}
+
+		// do some work with the connection ...
+		conn := resource.Resource().(net.Conn)
+		conn.Write(nil)
+
+		// put the connection back
+		if err := pool.Put(resource); err != nil {
+			panic(err)
+		}
+	}
+	// Output:
+}
 
 var testPool, _ = New(openTestResource, nil, 10, 5)
 
@@ -25,7 +60,7 @@ func openTestResource(ctx context.Context) (io.Closer, error) {
 	return testResource{}, nil
 }
 
-func ExamplePool() {
+func ExamplePool_TestSerially() {
 	r1, err := testPool.Get(context.Background())
 	checkResultAndPrintPoolStatus(r1, err, testPool)
 
@@ -73,7 +108,7 @@ func ExamplePool() {
 	// 0 0 0
 }
 
-func ExamplePool_concurrently() {
+func ExamplePool_TestConcurrently() {
 	var resources = make(chan *Resource, testPool.maxOpen)
 
 	var wg sync.WaitGroup
@@ -141,7 +176,7 @@ func printPoolStatus(p *Pool) {
 	fmt.Println(p.opened, len(p.busy), len(p.idle))
 }
 
-func ExampleNew() {
+func ExampleNew_Test() {
 	p, err := New(openTestResource, nil, 0, -1)
 	fmt.Println(p, err)
 
@@ -152,7 +187,7 @@ func ExampleNew() {
 	// 10 10
 }
 
-func ExampleNew2() {
+func ExampleNew2_Test() {
 	p, _ := New2(openTestResource, nil, nil)
 	fmt.Println(p.maxOpen, p.maxIdle)
 
@@ -167,7 +202,7 @@ func ExampleNew2() {
 	// 5 2
 }
 
-func ExamplePool_Get_error() {
+func ExamplePool_Get_TestError() {
 	p, _ := New(func(ctx context.Context) (io.Closer, error) {
 		return testResource{}, errors.New("error")
 	}, nil, 10, 5)
@@ -179,7 +214,7 @@ func ExamplePool_Get_error() {
 	// 0 0 0
 }
 
-func ExamplePool_Get_closeIfShould() {
+func ExamplePool_Get_TestCloseIfShould() {
 	var usable = true
 	p, _ := New(openTestResource, func(context.Context, *Resource) bool {
 		return usable
@@ -208,7 +243,7 @@ func testCloseIfShould(p *Pool) {
 
 }
 
-func ExamplePool_errorResource() {
+func ExamplePool_TestErrorResource() {
 	fmt.Println(testPool.Put(nil))
 	fmt.Println(testPool.Put(&Resource{Closer: testResource{}}))
 
@@ -222,7 +257,7 @@ func ExamplePool_errorResource() {
 	// pool: the resource is not got from this pool or already been put back or closed.
 }
 
-func ExamplePool_decrease() {
+func ExamplePool_TestDecrease() {
 	defer func() {
 		fmt.Println(strings.HasSuffix(recover().(string), " pool: opened(-1) < idle(0)"))
 	}()
