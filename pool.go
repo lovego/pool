@@ -2,9 +2,9 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/url"
 	"strconv"
 	"sync"
@@ -13,30 +13,31 @@ import (
 
 type Resource struct {
 	io.Closer
-	idleAt   time.Time
-	openedAt time.Time
+	IdleAt   time.Time
+	OpenedAt time.Time
 }
 
 func (r *Resource) Resource() io.Closer {
 	return r.Closer
 }
 
-type openFunc func(context.Context) (io.Closer, error)
+// the func to open a resource
+type OpenFunc func(context.Context) (io.Closer, error)
+
+// the func to check if a resource is usable.
+type UsableFunc func(context.Context, *Resource) bool
 
 type Pool struct {
-	// The resource open func
-	open openFunc
+	// The func to open a resource
+	open OpenFunc
+	// The func to check if a resource is usable when got from the pool.
+	usable UsableFunc
+
 	// Max number of resources can be opened at a given moment.
 	maxOpen int
 	// Max number of idle resources to keep.
 	// maxIdle <= 0 means never keep any idle resources.
 	maxIdle int
-	// When `Get`, close a resource if it has been idle for `maxIdleTime`.
-	// maxIdleTime <= 0 means never close a resource due to it's idle time.
-	maxIdleTime time.Duration
-	// When `Get`/`Put`, close a resource if it has been opened for `maxLifeTime`.
-	// maxLifeTime <= 0 means never close a resource due to it's life time.
-	maxLifeTime time.Duration
 
 	// current number of opened resources, including the idle ones and the busy ones.
 	opened int
@@ -48,7 +49,10 @@ type Pool struct {
 	sync.Mutex
 }
 
-func New(open openFunc, maxOpen, maxIdle int, maxIdleTime, maxLifeTime time.Duration) (*Pool, error) {
+func New(open OpenFunc, usable UsableFunc, maxOpen, maxIdle int) (*Pool, error) {
+	if open == nil {
+		return nil, errors.New("pool: nil open func")
+	}
 	if maxOpen <= 0 {
 		return nil, fmt.Errorf("pool: invalid maxOpen: %d", maxOpen)
 	}
@@ -60,14 +64,37 @@ func New(open openFunc, maxOpen, maxIdle int, maxIdleTime, maxLifeTime time.Dura
 	}
 
 	return &Pool{
-		open:        open,
-		maxOpen:     maxOpen,
-		maxIdle:     maxIdle,
-		maxIdleTime: maxIdleTime,
-		maxLifeTime: maxLifeTime,
-		idle:        make(chan *Resource, maxIdle),
-		busy:        make(map[*Resource]struct{}, maxOpen),
+		open:    open,
+		usable:  usable,
+		maxOpen: maxOpen,
+		maxIdle: maxIdle,
+		idle:    make(chan *Resource, maxIdle),
+		busy:    make(map[*Resource]struct{}, maxOpen),
 	}, nil
+}
+
+// New2 return a pool by params from url.Values.
+// Params default value: maxOpen => 10;  maxIdle => 1;
+func New2(open OpenFunc, usable UsableFunc, values url.Values) (*Pool, error) {
+	var maxOpen, maxIdle int = 10, 1
+
+	if s := values.Get(`maxOpen`); s != `` {
+		if i, err := strconv.Atoi(s); err != nil {
+			return nil, err
+		} else {
+			maxOpen = i
+		}
+	}
+
+	if s := values.Get(`maxIdle`); s != `` {
+		if i, err := strconv.Atoi(s); err != nil {
+			return nil, err
+		} else {
+			maxIdle = i
+		}
+	}
+
+	return New(open, usable, maxOpen, maxIdle)
 }
 
 func (p *Pool) tryIncrease() bool {
@@ -92,62 +119,10 @@ func (p *Pool) decrease() {
 	}
 }
 
-func (p *Pool) closeIfShould(r *Resource) bool {
-	if p.exceedMaxIdleTime(r) || p.exceedMaxLifeTime(r) {
-		if err := p.close(r); err != nil {
-			log.Println("pool: close resource:", err)
-		}
+func (p *Pool) closeIfShould(ctx context.Context, r *Resource) bool {
+	if p.usable != nil && !p.usable(ctx, r) {
+		p.close(r)
 		return true
 	}
 	return false
-}
-
-func (p *Pool) exceedMaxIdleTime(r *Resource) bool {
-	return r != nil && p.maxIdleTime > 0 && time.Since(r.idleAt) > p.maxIdleTime
-}
-
-func (p *Pool) exceedMaxLifeTime(r *Resource) bool {
-	return r != nil && p.maxLifeTime > 0 && time.Since(r.openedAt) > p.maxLifeTime
-}
-
-// New2 return a pool by get params from url.Values.
-// Params default value:
-// maxOpen => 10;  maxIdle => 1; maxIdleTime => 10 Minute; maxLifeTime => 1 Hour.
-func New2(open openFunc, values url.Values) (*Pool, error) {
-	var maxOpen, maxIdle int = 10, 1
-	var maxIdleTime, maxLifeTime time.Duration = 10 * time.Minute, time.Hour
-
-	if s := values.Get(`maxOpen`); s != `` {
-		if i, err := strconv.Atoi(s); err != nil {
-			return nil, err
-		} else {
-			maxOpen = i
-		}
-	}
-
-	if s := values.Get(`maxIdle`); s != `` {
-		if i, err := strconv.Atoi(s); err != nil {
-			return nil, err
-		} else {
-			maxIdle = i
-		}
-	}
-
-	if s := values.Get(`maxIdleTime`); s != `` {
-		if d, err := time.ParseDuration(s); err != nil {
-			return nil, err
-		} else {
-			maxIdleTime = d
-		}
-	}
-
-	if s := values.Get(`maxLifeTime`); s != `` {
-		if d, err := time.ParseDuration(s); err != nil {
-			return nil, err
-		} else {
-			maxLifeTime = d
-		}
-	}
-
-	return New(open, maxOpen, maxIdle, maxIdleTime, maxLifeTime)
 }

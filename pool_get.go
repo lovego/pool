@@ -3,7 +3,6 @@ package pool
 import (
 	"context"
 	"errors"
-	"log"
 	"time"
 )
 
@@ -20,7 +19,7 @@ func (p *Pool) Get(ctx context.Context) (*Resource, error) {
 var errorTimeout = errors.New("pool: get resource timeout.")
 
 func (p *Pool) get(ctx context.Context) (*Resource, error) {
-	if r := p.getIdle(); r != nil {
+	if r := p.getIdle(ctx); r != nil {
 		return r, nil
 	}
 
@@ -33,11 +32,11 @@ func (p *Pool) get(ctx context.Context) (*Resource, error) {
 	return p.waitIdle(ctx)
 }
 
-func (p *Pool) getIdle() *Resource {
+func (p *Pool) getIdle(ctx context.Context) *Resource {
 loop:
 	select {
 	case r := <-p.idle:
-		if p.closeIfShould(r) {
+		if p.closeIfShould(ctx, r) {
 			goto loop
 		}
 		return r
@@ -50,7 +49,7 @@ func (p *Pool) waitIdle(ctx context.Context) (*Resource, error) {
 loop:
 	select {
 	case r := <-p.idle:
-		if p.closeIfShould(r) {
+		if p.closeIfShould(ctx, r) {
 			goto loop
 		}
 		return r, nil
@@ -65,12 +64,10 @@ func (p *Pool) tryOpen(ctx context.Context) (*Resource, error) {
 	}
 	resource, err := p.open(ctx)
 	if resource != nil && err == nil {
-		return &Resource{Closer: resource, openedAt: time.Now()}, nil
+		return &Resource{Closer: resource, OpenedAt: time.Now()}, nil
 	}
 	if resource != nil {
-		if err := resource.Close(); err != nil {
-			log.Println("pool: close resource:", err)
-		}
+		resource.Close()
 	}
 	p.decrease()
 	return nil, err

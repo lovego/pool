@@ -8,19 +8,16 @@ import (
 // Put a resource back into the pool.
 // The resource must be got from the pool and be `Put` only one time, otherwise an error is returned.
 func (p *Pool) Put(r *Resource) error {
-	if p.exceedMaxLifeTime(r) {
-		return p.Close(r)
-	}
 	if err := p.removeFromBusy(r); err != nil {
 		return err
 	}
 	select {
 	case p.idle <- r:
-		r.idleAt = time.Now()
-		return nil
+		r.IdleAt = time.Now()
 	default:
-		return p.close(r)
+		p.close(r)
 	}
+	return nil
 }
 
 // Close a resource got from the pool.
@@ -29,12 +26,14 @@ func (p *Pool) Close(r *Resource) error {
 	if err := p.removeFromBusy(r); err != nil {
 		return err
 	}
-	return p.close(r)
+	p.close(r)
+	return nil
 }
 
-func (p *Pool) close(r *Resource) error {
+func (p *Pool) close(r *Resource) {
 	p.decrease()
-	return r.Closer.Close()
+	// network connection often is already closed, but is doesn't matter, so drop the return err.
+	r.Closer.Close()
 }
 
 var errorResource = errors.New("pool: the resource is not got from this pool or already been put back or closed.")

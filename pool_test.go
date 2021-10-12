@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
 
-var testPool, _ = New(openTestResource, 10, 5, time.Minute, time.Hour)
+var testPool, _ = New(openTestResource, nil, 10, 5)
 
 type testResource struct {
 }
@@ -131,7 +132,7 @@ func checkResultAndPrintPoolStatus(r *Resource, err error, p *Pool) {
 }
 
 func checkResult(r *Resource, err error) {
-	if r == nil || r.Resource() == nil || !r.openedAt.Before(time.Now()) || err != nil {
+	if r == nil || r.Resource() == nil || !r.OpenedAt.Before(time.Now()) || err != nil {
 		fmt.Println(r, err)
 	}
 }
@@ -141,21 +142,35 @@ func printPoolStatus(p *Pool) {
 }
 
 func ExampleNew() {
-	p, err := New(openTestResource, 0, -1, time.Minute, time.Hour)
+	p, err := New(openTestResource, nil, 0, -1)
 	fmt.Println(p, err)
 
-	p, _ = New(openTestResource, 10, 11, time.Minute, time.Hour)
+	p, _ = New(openTestResource, nil, 10, 11)
 	fmt.Println(p.maxOpen, p.maxIdle)
-
 	// Output:
 	// <nil> pool: invalid maxOpen: 0
 	// 10 10
 }
 
+func ExampleNew2() {
+	p, _ := New2(openTestResource, nil, nil)
+	fmt.Println(p.maxOpen, p.maxIdle)
+
+	p, _ = New2(openTestResource, nil, url.Values{
+		"maxOpen": []string{"5"},
+		"maxIdle": []string{"2"},
+	})
+	fmt.Println(p.maxOpen, p.maxIdle)
+
+	// Output:
+	// 10 1
+	// 5 2
+}
+
 func ExamplePool_Get_error() {
 	p, _ := New(func(ctx context.Context) (io.Closer, error) {
 		return testResource{}, errors.New("error")
-	}, 10, 5, time.Minute, time.Hour)
+	}, nil, 10, 5)
 	fmt.Println(p.Get(context.Background()))
 	printPoolStatus(p)
 
@@ -165,30 +180,32 @@ func ExamplePool_Get_error() {
 }
 
 func ExamplePool_Get_closeIfShould() {
-	p, _ := New(openTestResource, 1, 1, 10*time.Millisecond, 30*time.Millisecond)
+	var usable = true
+	p, _ := New(openTestResource, func(context.Context, *Resource) bool {
+		return usable
+	}, 1, 1)
+	testCloseIfShould(p)
+	usable = false
+	testCloseIfShould(p)
+
+	// Output:
+	// true
+	// false
+}
+
+func testCloseIfShould(p *Pool) {
 	r1, err := p.Get(context.Background())
 	checkResult(r1, err)
 	if err := p.Put(r1); err != nil {
 		fmt.Println(err)
 	}
-
-	time.Sleep(11 * time.Millisecond)
-	printPoolStatus(p)
-
 	r2, err := p.Get(context.Background())
 	checkResult(r2, err)
-	printPoolStatus(p)
-
-	time.Sleep(31 * time.Millisecond)
 	if err := p.Put(r2); err != nil {
 		fmt.Println(err)
 	}
-	printPoolStatus(p)
+	fmt.Println(r1 == r2)
 
-	// Output:
-	// 1 0 1
-	// 1 1 0
-	// 0 0 0
 }
 
 func ExamplePool_errorResource() {
@@ -209,7 +226,7 @@ func ExamplePool_decrease() {
 	defer func() {
 		fmt.Println(strings.HasSuffix(recover().(string), " pool: opened(-1) < idle(0)"))
 	}()
-	p, _ := New(openTestResource, 1, 1, time.Minute, time.Hour)
+	p, _ := New(openTestResource, nil, 1, 1)
 	p.decrease()
 	// Output: true
 }
