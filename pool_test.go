@@ -27,6 +27,7 @@ func ExamplePool() {
 		panic(err)
 	}
 
+	// this can also be doing concurrently
 	for i := 0; i < 10; i++ {
 		ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 		// get a connection
